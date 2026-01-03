@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-task-manager
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: flask-task-manager
+  template:
+    metadata:
+      labels:
+        app: flask-task-manager
+    spec:
+      containers:
+        - name: flask-app
+          image: optimusprime123/flask-task-manager
+          ports:
+            - containerPort: 5000
