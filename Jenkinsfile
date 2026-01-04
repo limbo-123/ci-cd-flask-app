@@ -1,93 +1,95 @@
 pipeline {
-    agent {
-        kubernetes {
-            yaml """
+  agent {
+    kubernetes {
+      label 'kaniko-agent'
+      yaml """
 apiVersion: v1
 kind: Pod
 spec:
   containers:
   - name: jnlp
     image: jenkins/inbound-agent:latest
-    args: ['\$(JENKINS_SECRET)', '\$(JENKINS_NAME)']
-  - name: docker
-    image: docker:24.0.5
+
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:latest
     command:
     - cat
     tty: true
+
   - name: kubectl
     image: bitnami/kubectl:latest
     command:
     - cat
     tty: true
 """
-        }
+    }
+  }
+
+  environment {
+    IMAGE = "limbo-123/flask-task-manager:${BUILD_ID}"
+  }
+
+  stages {
+
+    stage('Checkout') {
+      steps {
+        git branch: 'main',
+            url: 'https://github.com/limbo-123/ci-cd-flask-app.git'
+      }
     }
 
-    environment {
-        DOCKER_HUB = 'limbo-123'
-        IMAGE_NAME = 'flask-task-manager'
-        KUBECONFIG_CREDENTIALS = 'kubeconfig'
-    }
+    stage('Build & Push Image') {
+      steps {
+        container('kaniko') {
+          withCredentials([usernamePassword(
+            credentialsId: 'docker-hub-creds',
+            usernameVariable: 'DOCKER_USER',
+            passwordVariable: 'DOCKER_PASS'
+          )]) {
+            sh '''
+              mkdir -p /kaniko/.docker
 
-    stages {
-        stage('Checkout') {
-            steps {
-                git branch: 'main', url: 'https://github.com/limbo-123/ci-cd-flask-app.git'
-            }
-        }
-
-        stage('Build Docker Image') {
-            steps {
-                container('docker') {
-                    script {
-                        dockerImage = docker.build("${DOCKER_HUB}/${IMAGE_NAME}:${env.BUILD_ID}")
-                    }
+              cat <<EOF > /kaniko/.docker/config.json
+              {
+                "auths": {
+                  "https://index.docker.io/v1/": {
+                    "username": "$DOCKER_USER",
+                    "password": "$DOCKER_PASS"
+                  }
                 }
-            }
-        }
+              }
+              EOF
 
-        stage('Push Docker Image') {
-            steps {
-                container('docker') {
-                    withCredentials([usernamePassword(
-                        credentialsId: 'docker-hub-creds',
-                        usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASS'
-                    )]) {
-                        script {
-                            docker.withRegistry('', 'docker-hub-creds') {
-                                dockerImage.push()
-                            }
-                        }
-                    }
-                }
-            }
+              /kaniko/executor \
+                --dockerfile=Dockerfile \
+                --context=. \
+                --destination=$IMAGE
+            '''
+          }
         }
-
-        stage('Deploy to Kubernetes') {
-            steps {
-                container('kubectl') {
-                    withCredentials([file(
-                        credentialsId: "${KUBECONFIG_CREDENTIALS}",
-                        variable: 'KUBECONFIG_FILE'
-                    )]) {
-                        sh '''
-                            export KUBECONFIG=$KUBECONFIG_FILE
-                            kubectl set image deployment/flask-task-manager flask-app=${DOCKER_HUB}/${IMAGE_NAME}:${BUILD_ID} --record
-                            kubectl rollout status deployment/flask-task-manager
-                        '''
-                    }
-                }
-            }
-        }
+      }
     }
 
-    post {
-        success {
-            echo '✅ CI/CD pipeline completed successfully!'
+    stage('Deploy to Kubernetes') {
+      steps {
+        container('kubectl') {
+          sh '''
+            kubectl set image deployment/flask-task-manager \
+              flask-app=$IMAGE --record
+
+            kubectl rollout status deployment/flask-task-manager
+          '''
         }
-        failure {
-            echo '❌ Pipeline failed! Check logs.'
-        }
+      }
     }
+  }
+
+  post {
+    success {
+      echo "✅ CI/CD pipeline completed successfully"
+    }
+    failure {
+      echo "❌ Pipeline failed – check logs"
+    }
+  }
 }
